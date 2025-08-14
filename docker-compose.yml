@@ -1,0 +1,25 @@
+services:
+  bz1-rinha-de-backend-2025:
+    image: rafaelberrocalj/bz1:rinha-de-backend-2025-latest
+    networks:
+      - backend
+      - payment-processor
+    ports:
+      - "9999:9999"
+    environment:
+      - DOTNET_ENVIRONMENT=Production
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:9999
+      - PAYMENT_PROCESSOR_URL_DEFAULT=http://payment-processor-default:8080
+      - PAYMENT_PROCESSOR_URL_FALLBACK=http://payment-processor-fallback:8080
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: "350MB"
+    
+networks:
+  backend:
+    driver: bridge
+  payment-processor:
+    external: true
