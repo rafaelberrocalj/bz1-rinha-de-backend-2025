@@ -3,20 +3,14 @@ WORKDIR /app
 RUN mkdir /data
 VOLUME /data
 EXPOSE 9999
-ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 
 FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
 WORKDIR /src
-COPY ["bz1-rinha-de-backend-2025.csproj", "."]
-RUN dotnet restore "./bz1-rinha-de-backend-2025.csproj"
 COPY . .
-WORKDIR "/src/."
 RUN dotnet build "./bz1-rinha-de-backend-2025.csproj" -c Release -o /app/build
-
-FROM build AS publish
 RUN dotnet publish "./bz1-rinha-de-backend-2025.csproj" -c Release -o /app/publish
 
 FROM base AS final
 WORKDIR /app
-COPY --from=publish /app/publish .
+COPY --from=build /app/publish .
 ENTRYPOINT ["dotnet", "bz1-rinha-de-backend-2025.dll"]

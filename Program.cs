@@ -5,8 +5,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
 
-ThreadPool.SetMinThreads(2, 2);
-
 var builder = WebApplication.CreateBuilder();
 
 var paymentApiItems = new List<PaymentApi>
@@ -31,14 +29,14 @@ builder.Services.AddHttpClient(nameof(ProcessorType.Fallback), client =>
 
 builder.Services.AddHostedService<PaymentProcessorService>();
 
+builder.Services.AddDbContext<PaymentDbContext1>();
+builder.Services.AddDbContext<PaymentDbContext2>();
+
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
     options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
 });
-
-var pathSqliteDatabase = Environment.GetEnvironmentVariable("SQLITE_DATABASE") ?? "temp/app.db";
-builder.Services.AddDbContext<PaymentDbContext>(options => options.UseSqlite($"Data Source={pathSqliteDatabase};"));
 
 var app = builder.Build();
 
@@ -46,13 +44,26 @@ try
 {
     using (var scope = app.Services.CreateScope())
     {
-        var context = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
+        var context = scope.ServiceProvider.GetRequiredService<PaymentDbContext1>();
         context.Database.EnsureCreated();
     }
 }
 catch (Exception ex)
 {
-    app.Logger.LogError(ex, "EnsureCreated failed: {message}", ex.Message);
+    app.Logger.LogError(ex, "{context} EnsureCreated failed: {message}", nameof(PaymentDbContext1), ex.Message);
+}
+
+try
+{
+    using (var scope = app.Services.CreateScope())
+    {
+        var context = scope.ServiceProvider.GetRequiredService<PaymentDbContext2>();
+        context.Database.EnsureCreated();
+    }
+}
+catch (Exception ex)
+{
+    app.Logger.LogError(ex, "{context} EnsureCreated failed: {message}", nameof(PaymentDbContext2), ex.Message);
 }
 
 app.MapPost("/payments", async (PaymentRequest request, Channel<PaymentDb> channel, CancellationToken cancellationToken) =>
@@ -67,17 +78,32 @@ app.MapPost("/payments", async (PaymentRequest request, Channel<PaymentDb> chann
     return Results.Accepted();
 });
 
-app.MapGet("/payments-summary", async (PaymentDbContext context, string from = null, string to = null, CancellationToken cancellationToken = default) =>
+app.MapGet("/payments-summary", async (
+    PaymentDbContext1 context1,
+    PaymentDbContext2 context2,
+    string from = null,
+    string to = null,
+    CancellationToken cancellationToken = default) =>
 {
     if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to))
     {
         return Results.Ok(new PaymentSummaryResponse());
     }
 
-    var fromDateTime = DateTimeOffset.Parse(from).ToUnixTimeMilliseconds();
-    var toDateTime = DateTimeOffset.Parse(to).ToUnixTimeMilliseconds();
+    long fromDateTime;
+    long toDateTime;
 
-    var payments = (await context.Payments
+    try
+    {
+        fromDateTime = DateTimeOffset.Parse(from).ToUnixTimeMilliseconds();
+        toDateTime = DateTimeOffset.Parse(to).ToUnixTimeMilliseconds();
+    }
+    catch (Exception)
+    {
+        return Results.Ok(new PaymentSummaryResponse());
+    }
+
+    var payments1 = await context1.Payments
         .AsNoTracking()
         .Where(w => w.RequestedAt >= fromDateTime && w.RequestedAt <= toDateTime)
         .Select(s => new
@@ -85,7 +111,24 @@ app.MapGet("/payments-summary", async (PaymentDbContext context, string from = n
             s.ProcessorType,
             s.Amount
         })
-        .ToListAsync(cancellationToken))
+        .ToArrayAsync(cancellationToken);
+
+    var payments2 = await context2.Payments
+        .AsNoTracking()
+        .Where(w => w.RequestedAt >= fromDateTime && w.RequestedAt <= toDateTime)
+        .Select(s => new
+        {
+            s.ProcessorType,
+            s.Amount
+        })
+        .ToArrayAsync(cancellationToken);
+
+    if (!payments1.Any() && !payments2.Any())
+    {
+        return Results.Ok(new PaymentSummaryResponse());
+    }
+
+    var payments = payments1.Concat(payments2)
         .GroupBy(g => g.ProcessorType)
         .ToDictionary(
             d => d.Key,
@@ -123,8 +166,8 @@ public class PaymentRequest
 
 public class PaymentSummaryResponse
 {
-    public ProcessorSummary Default { get; set; } = new ProcessorSummary();
-    public ProcessorSummary Fallback { get; set; } = new ProcessorSummary();
+    public ProcessorSummary Default { get; set; } = new();
+    public ProcessorSummary Fallback { get; set; } = new();
 }
 
 public class ProcessorSummary
@@ -149,14 +192,38 @@ public class PaymentApi
 {
     public ProcessorType ProcessorType { get; set; }
     public bool IsHealthy { get; set; } = true;
-    public int DelayInMilliseconds { get; set; } = 0;
+    public int DelayInMilliseconds { get; set; }
 }
 
-public class PaymentDbContext : DbContext
+public class PaymentDbContext1 : DbContext
 {
-    public PaymentDbContext(DbContextOptions<PaymentDbContext> options) : base(options) { }
+    public PaymentDbContext1(DbContextOptions<PaymentDbContext1> options) : base(options) { }
 
     public DbSet<PaymentDb> Payments { get; set; }
+
+    private static string SQLITE_DATABASE = Environment.GetEnvironmentVariable("SQLITE_DATABASE") ?? "temp/app1.db";
+
+    protected override void OnConfiguring(DbContextOptionsBuilder options) => options.UseSqlite($"Data Source={SQLITE_DATABASE};");
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<PaymentDb>(entity =>
+        {
+            entity.HasKey(e => e.CorrelationId);
+            entity.Property(e => e.Amount).HasPrecision(9, 2);
+            entity.HasIndex(e => e.RequestedAt);
+        });
+    }
+}
+
+public class PaymentDbContext2 : DbContext
+{
+    public PaymentDbContext2(DbContextOptions<PaymentDbContext2> options) : base(options) { }
+
+    public DbSet<PaymentDb> Payments { get; set; }
+    private static string SQLITE_DATABASE = Environment.GetEnvironmentVariable("SQLITE_DATABASE") ?? "temp/app2.db";
+
+    protected override void OnConfiguring(DbContextOptionsBuilder options) => options.UseSqlite($"Data Source={SQLITE_DATABASE};");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -181,24 +248,26 @@ public class PaymentProcessorService : BackgroundService
 {
     private readonly HttpClient _httpClientDefault;
     private readonly HttpClient _httpClientFallback;
-    private readonly PaymentDbContext _paymentDbContext;
+    private readonly PaymentDbContext1 _paymentDbContext1;
+    private readonly PaymentDbContext2 _paymentDbContext2;
     private readonly Channel<PaymentDb> _channel;
     private readonly List<PaymentApi> _paymentApiItems;
-    private readonly ILogger<PaymentProcessorService> _logger;
+
+    private static string BACKEND_ID = Environment.GetEnvironmentVariable("BACKEND_ID") ?? "1";
 
     public PaymentProcessorService(
         IHttpClientFactory httpClientFactory,
-        PaymentDbContext paymentDbContext,
+        PaymentDbContext1 paymentDbContext1,
+        PaymentDbContext2 paymentDbContext2,
         Channel<PaymentDb> channel,
-        List<PaymentApi> paymentApiItems,
-        ILogger<PaymentProcessorService> logger)
+        List<PaymentApi> paymentApiItems)
     {
         _httpClientDefault = httpClientFactory.CreateClient(nameof(ProcessorType.Default));
         _httpClientFallback = httpClientFactory.CreateClient(nameof(ProcessorType.Fallback));
-        _paymentDbContext = paymentDbContext;
+        _paymentDbContext1 = paymentDbContext1;
+        _paymentDbContext2 = paymentDbContext2;
         _channel = channel;
         _paymentApiItems = paymentApiItems;
-        _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken cancellationToken)
@@ -305,9 +374,21 @@ public class PaymentProcessorService : BackgroundService
             {
                 paymentDb.ProcessorType = paymentApi.ProcessorType;
 
-                _paymentDbContext.Payments.Add(paymentDb);
+                switch (BACKEND_ID)
+                {
+                    case "1":
+                        _paymentDbContext1.Payments.Add(paymentDb);
+                        await _paymentDbContext1.SaveChangesAsync(cancellationToken);
+                        break;
 
-                await _paymentDbContext.SaveChangesAsync(cancellationToken);
+                    case "2":
+                        _paymentDbContext2.Payments.Add(paymentDb);
+                        await _paymentDbContext2.SaveChangesAsync(cancellationToken);
+                        break;
+
+                    default:
+                        throw new NotImplementedException();
+                }
 
                 return true;
             }
