@@ -35,14 +35,21 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
 });
 
-builder.Services.AddDbContext<PaymentDbContext>(options => options.UseInMemoryDatabase("bz1-rinha-de-backend-2025"));
-
+var pathSqliteDatabase = Environment.GetEnvironmentVariable("SQLITE_DATABASE") ?? "temp/app.db";
+builder.Services.AddDbContext<PaymentDbContext>(options => options.UseSqlite($"Data Source={pathSqliteDatabase};"));
 var app = builder.Build();
 
-using (var scope = app.Services.CreateScope())
+try
 {
-    var context = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
-    context.Database.EnsureCreated();
+    using (var scope = app.Services.CreateScope())
+    {
+        var context = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
+        context.Database.EnsureCreated();
+    }
+}
+catch (Exception ex)
+{
+    app.Logger.LogError(ex, "EnsureCreated failed: {message}", ex.Message);
 }
 
 app.MapPost("/payments", async (PaymentRequest request, Channel<PaymentDb> channel, CancellationToken cancellationToken) =>
@@ -51,7 +58,7 @@ app.MapPost("/payments", async (PaymentRequest request, Channel<PaymentDb> chann
     {
         CorrelationId = request.CorrelationId,
         Amount = request.Amount,
-        RequestedAt = DateTimeOffset.UtcNow
+        RequestedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
     }, cancellationToken);
 
     return Results.Accepted();
@@ -59,12 +66,12 @@ app.MapPost("/payments", async (PaymentRequest request, Channel<PaymentDb> chann
 
 app.MapGet("/payments-summary", async (PaymentDbContext context, string from, string to, CancellationToken cancellationToken) =>
 {
-    DateTimeOffset fromDateTimeOffset = DateTimeOffset.Parse(from);
-    DateTimeOffset toDateTimeOffset = DateTimeOffset.Parse(to);
+    var fromDateTime = DateTimeOffset.Parse(from).ToUnixTimeMilliseconds();
+    var toDateTime = DateTimeOffset.Parse(to).ToUnixTimeMilliseconds();
 
     var payments = (await context.Payments
         .AsNoTracking()
-        .Where(w => w.RequestedAt >= fromDateTimeOffset && w.RequestedAt <= toDateTimeOffset)
+        .Where(w => w.RequestedAt >= fromDateTime && w.RequestedAt <= toDateTime)
         .Select(s => new
         {
             s.ProcessorType,
@@ -158,7 +165,7 @@ public class PaymentDb
 {
     public string CorrelationId { get; set; }
     public decimal Amount { get; set; }
-    public DateTimeOffset RequestedAt { get; set; }
+    public long RequestedAt { get; set; }
     public ProcessorType ProcessorType { get; set; }
 }
 

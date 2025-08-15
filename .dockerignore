@@ -2,8 +2,10 @@
 **/bin/
 **/obj/
 **/out/
+**/temp/
 
 # files
 Dockerfile*
+nginx.conf
 **/*.md
 **/*.sh
