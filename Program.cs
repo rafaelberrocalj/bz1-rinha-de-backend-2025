@@ -67,8 +67,13 @@ app.MapPost("/payments", async (PaymentRequest request, Channel<PaymentDb> chann
     return Results.Accepted();
 });
 
-app.MapGet("/payments-summary", async (PaymentDbContext context, string from, string to, CancellationToken cancellationToken) =>
+app.MapGet("/payments-summary", async (PaymentDbContext context, string from = null, string to = null, CancellationToken cancellationToken = default) =>
 {
+    if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to))
+    {
+        return Results.Ok(new PaymentSummaryResponse());
+    }
+
     var fromDateTime = DateTimeOffset.Parse(from).ToUnixTimeMilliseconds();
     var toDateTime = DateTimeOffset.Parse(to).ToUnixTimeMilliseconds();
 
@@ -118,8 +123,8 @@ public class PaymentRequest
 
 public class PaymentSummaryResponse
 {
-    public ProcessorSummary Default { get; set; }
-    public ProcessorSummary Fallback { get; set; }
+    public ProcessorSummary Default { get; set; } = new ProcessorSummary();
+    public ProcessorSummary Fallback { get; set; } = new ProcessorSummary();
 }
 
 public class ProcessorSummary
