@@ -5,6 +5,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
 
+ThreadPool.SetMinThreads(2, 2);
+
 var builder = WebApplication.CreateBuilder();
 
 var paymentApiItems = new List<PaymentApi>
@@ -37,6 +39,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var pathSqliteDatabase = Environment.GetEnvironmentVariable("SQLITE_DATABASE") ?? "temp/app.db";
 builder.Services.AddDbContext<PaymentDbContext>(options => options.UseSqlite($"Data Source={pathSqliteDatabase};"));
+
 var app = builder.Build();
 
 try
@@ -258,11 +261,9 @@ public class PaymentProcessorService : BackgroundService
                     paymentApiItem.DelayInMilliseconds = paymentServiceHealth.MinResponseTime;
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 paymentApiItem.IsHealthy = false;
-
-                _logger.LogError(ex, "[{api}] healthcheck-error : {message}", processorType, ex.Message);
             }
 
             await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
@@ -305,13 +306,8 @@ public class PaymentProcessorService : BackgroundService
 
                 return true;
             }
-
-            _logger.LogError("[{api}] save-failed : {status}", paymentApi.ProcessorType, (int)httpResponseMessage.StatusCode);
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[{api}] save-error : {message}", paymentApi.ProcessorType, ex.Message);
-        }
+        catch (Exception) { }
 
         return false;
     }
