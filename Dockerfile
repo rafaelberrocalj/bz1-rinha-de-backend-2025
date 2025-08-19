@@ -6,9 +6,7 @@ EXPOSE 9999
 
 FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
 WORKDIR /src
-COPY . .
-RUN dotnet build "./bz1-rinha-de-backend-2025.csproj" -c Release -o /app/build
-RUN dotnet publish "./bz1-rinha-de-backend-2025.csproj" -c Release -o /app/publish
+COPY app-publish /app/publish
 
 FROM base AS final
 WORKDIR /app
